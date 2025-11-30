@@ -12,6 +12,8 @@
 import pandas as pd
 import numpy as np
 import redis
+import pickle
+from io import StringIO
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, List
 from datetime import datetime
@@ -286,16 +288,19 @@ class DataNormalizer:
         # 停牌标记: volume=0
         halt_mask = data['volume'] == 0
 
-        # 价格用前一日填充
+        # 获取前一日收盘价（向前填充）
+        prev_close = data['close'].shift(1).ffill()
+
+        # 停牌日的所有价格用前一日收盘价填充
         for col in ['open', 'high', 'low', 'close']:
             if col in data.columns:
-                data.loc[halt_mask, col] = data[col].ffill()
+                data.loc[halt_mask, col] = prev_close[halt_mask]
 
         return data
 
     def remove_outliers(self, data: pd.DataFrame, n_sigma: float = 3.0) -> pd.DataFrame:
         """
-        3-sigma异常值过滤
+        3-sigma异常值过滤（混合IQR和MAD方法）
 
         Args:
             data: K线数据
@@ -304,22 +309,45 @@ class DataNormalizer:
         Returns:
             过滤后的数据
         """
-        if data.empty:
+        if data.empty or len(data) == 0:
             return data
 
         data = data.copy()
 
-        # 对每个价格列应用3-sigma过滤
+        # 标记所有异常行（任一价格列为异常值即标记）
+        outlier_mask = pd.Series([False] * len(data), index=data.index)
+
+        # 对每个价格列检测异常值
         for col in ['open', 'high', 'low', 'close']:
             if col in data.columns:
-                mean = data[col].mean()
-                std = data[col].std()
+                # 方法1: IQR（四分位距）方法
+                Q1 = data[col].quantile(0.25)
+                Q3 = data[col].quantile(0.75)
+                IQR = Q3 - Q1
 
-                lower = mean - n_sigma * std
-                upper = mean + n_sigma * std
+                if IQR > 0:
+                    # 使用1.5倍IQR作为阈值（经典boxplot标准）
+                    lower = Q1 - 1.5 * IQR
+                    upper = Q3 + 1.5 * IQR
+                    outlier_mask |= (data[col] < lower) | (data[col] > upper)
+                else:
+                    # 方法2: 当IQR=0时，使用MAD (Median Absolute Deviation)
+                    median = data[col].median()
+                    mad = (data[col] - median).abs().median()
 
-                # 过滤异常值
-                data = data[(data[col] >= lower) & (data[col] <= upper)]
+                    if mad > 0:
+                        # 使用修改的z-score: |x - median| / MAD > threshold
+                        # 通常阈值为3.5对应3-sigma
+                        threshold = 3.5 * mad
+                        outlier_mask |= (data[col] - median).abs() > threshold
+                    else:
+                        # 方法3: MAD也为0时，检测绝对倍数差异
+                        # 如果某值与中位数相差超过中位数的10倍（对于股价来说很极端）
+                        if median > 0:
+                            outlier_mask |= (data[col] > median * 10) | (data[col] < median / 10)
+
+        # 删除异常值行
+        data = data[~outlier_mask]
 
         return data
 
@@ -442,7 +470,8 @@ class DataSourceManager:
 
             if cached:
                 logger.info(f"缓存命中: {cache_key}")
-                return pd.read_json(cached)
+                # 使用pickle反序列化（比JSON快很多）
+                return pickle.loads(cached)
 
         # 2. 依次尝试数据源
         last_error = None
@@ -473,9 +502,9 @@ class DataSourceManager:
 
                 logger.info(f"{source['name']} 获取数据成功: {len(data)}条")
 
-                # 写入缓存
+                # 写入缓存（使用pickle序列化，比JSON快很多）
                 if self.cache:
-                    self.cache.setex(cache_key, 86400 * 7, data.to_json())  # 缓存7天
+                    self.cache.setex(cache_key, 86400 * 7, pickle.dumps(data))  # 缓存7天
 
                 return data
 

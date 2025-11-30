@@ -36,6 +36,24 @@ services:
     networks:
       - cn5lite_network
 
+  app:
+    build: .
+    container_name: cn5lite_app
+    environment:
+      DATABASE_URL: postgresql://cn5user:${DB_PASSWORD:-cn5pass}@db:5432/cn5lite
+      REDIS_URL: redis://redis:6379/0
+      PYTHONPATH: /app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    networks:
+      - cn5lite_network
+    command: tail -f /dev/null  # 保持容器运行
+
 volumes:
   postgres_data:
   redis_data:
