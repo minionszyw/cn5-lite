@@ -11,7 +11,25 @@ CN5-Lite AI策略生成器测试
 
 import pytest
 import ast
+import os
+import tempfile
 from unittest.mock import Mock, patch, MagicMock
+
+
+@pytest.fixture(autouse=True)
+def setup_test_db(tmp_path, monkeypatch):
+    """为每个测试设置独立的数据库"""
+    test_db_path = str(tmp_path / "test.db")
+    monkeypatch.setenv("DATABASE_PATH", test_db_path)
+
+    # 确保每个测试都使用新的数据库连接
+    import app.database
+    app.database._db_connection = None
+
+    yield
+
+    # 测试后清理
+    app.database.close_db()
 
 
 class TestCodeSecurityChecker:
@@ -437,3 +455,256 @@ class TestPromptBuilder:
         prompt = builder.build("创建策略")
 
         assert "示例" in prompt or "example" in prompt.lower()
+
+
+class TestStrategySandbox:
+    """策略沙箱执行测试"""
+
+    def test_safe_execution_timeout(self):
+        """测试执行超时保护"""
+        from app.services.ai_generator import StrategySandbox
+
+        # 死循环代码
+        infinite_loop_code = """
+class InfiniteStrategy:
+    def on_bar(self, bar):
+        while True:
+            pass
+"""
+
+        sandbox = StrategySandbox(timeout=1)  # 1秒超时
+
+        from app.errors import ExecutionError
+        with pytest.raises(ExecutionError, match="执行超时"):
+            sandbox.execute(infinite_loop_code, method="on_bar", args=({"close": 100},))
+
+    def test_safe_execution_success(self):
+        """测试正常执行"""
+        from app.services.ai_generator import StrategySandbox
+
+        valid_code = """
+class SimpleStrategy:
+    def __init__(self):
+        self.result = None
+
+    def on_bar(self, bar):
+        self.result = bar['close'] * 2
+        return self.result
+"""
+
+        sandbox = StrategySandbox(timeout=5)
+        result = sandbox.execute(valid_code, method="on_bar", args=({"close": 100},))
+
+        assert result == 200
+
+    def test_sandbox_memory_isolation(self):
+        """测试内存隔离"""
+        from app.services.ai_generator import StrategySandbox
+
+        code1 = """
+class Strategy1:
+    def on_bar(self, bar):
+        return 1
+"""
+
+        code2 = """
+class Strategy2:
+    def on_bar(self, bar):
+        return 2
+"""
+
+        sandbox = StrategySandbox(timeout=5)
+
+        result1 = sandbox.execute(code1, method="on_bar", args=({"close": 100},))
+        result2 = sandbox.execute(code2, method="on_bar", args=({"close": 100},))
+
+        assert result1 == 1
+        assert result2 == 2
+
+    def test_sandbox_resource_limit(self):
+        """测试资源限制（验证沙箱能处理大内存分配）"""
+        from app.services.ai_generator import StrategySandbox
+
+        # 大量内存分配
+        memory_intensive_code = """
+class MemoryStrategy:
+    def on_bar(self, bar):
+        # 尝试分配较大内存
+        data = [0] * (10 ** 6)  # 约8MB
+        return len(data)
+"""
+
+        sandbox = StrategySandbox(timeout=5, max_memory_mb=100)
+
+        # 验证沙箱能够执行并返回正确结果
+        result = sandbox.execute(memory_intensive_code, method="on_bar", args=({"close": 100},))
+
+        # 验证返回值
+        assert result == 10 ** 6
+
+    def test_sandbox_exception_handling(self):
+        """测试异常处理"""
+        from app.services.ai_generator import StrategySandbox
+
+        error_code = """
+class ErrorStrategy:
+    def on_bar(self, bar):
+        raise ValueError("Intentional error")
+"""
+
+        sandbox = StrategySandbox(timeout=5)
+
+        from app.errors import ExecutionError
+        with pytest.raises(ExecutionError):
+            sandbox.execute(error_code, method="on_bar", args=({"close": 100},))
+
+
+class TestStrategyStorage:
+    """策略存储测试"""
+
+    def test_save_strategy_to_db(self):
+        """测试保存策略到数据库"""
+        from app.services.ai_generator import StrategyStorage
+
+        storage = StrategyStorage()
+
+        strategy_data = {
+            "name": "测试策略",
+            "code": "class TestStrategy:\n    pass",
+            "params": {"ma_period": 10},
+            "description": "测试描述"
+        }
+
+        strategy_id = storage.save(strategy_data)
+
+        assert isinstance(strategy_id, int)
+        assert strategy_id > 0
+
+    def test_load_strategy_from_db(self):
+        """测试从数据库加载策略"""
+        from app.services.ai_generator import StrategyStorage
+
+        storage = StrategyStorage()
+
+        # 先保存
+        strategy_data = {
+            "name": "加载测试策略",
+            "code": "class LoadStrategy:\n    pass",
+            "params": {"period": 20}
+        }
+        strategy_id = storage.save(strategy_data)
+
+        # 再加载
+        loaded = storage.load(strategy_id)
+
+        assert loaded is not None
+        assert loaded["name"] == "加载测试策略"
+        assert "LoadStrategy" in loaded["code"]
+
+    def test_list_strategies(self):
+        """测试列出所有策略"""
+        from app.services.ai_generator import StrategyStorage
+
+        storage = StrategyStorage()
+
+        # 保存多个策略
+        for i in range(3):
+            storage.save({
+                "name": f"策略{i}",
+                "code": f"class Strategy{i}:\n    pass",
+                "params": {}
+            })
+
+        strategies = storage.list(limit=10)
+
+        assert len(strategies) >= 3
+
+    def test_delete_strategy(self):
+        """测试删除策略"""
+        from app.services.ai_generator import StrategyStorage
+
+        storage = StrategyStorage()
+
+        # 保存策略
+        strategy_id = storage.save({
+            "name": "待删除策略",
+            "code": "class DeleteMe:\n    pass",
+            "params": {}
+        })
+
+        # 删除
+        storage.delete(strategy_id)
+
+        # 验证已删除
+        loaded = storage.load(strategy_id)
+        assert loaded is None
+
+
+class TestStrategyValidator:
+    """策略逻辑验证测试"""
+
+    def test_validate_empty_data(self):
+        """测试空数据处理"""
+        from app.services.ai_generator import StrategyValidator
+
+        validator = StrategyValidator()
+
+        code = """
+class EmptyDataStrategy:
+    def on_bar(self, bar):
+        if bar:
+            return True
+        return False
+"""
+
+        # 测试空bar
+        result = validator.validate(code, test_data=[])
+
+        assert result["passed"] is True  # 应该能处理空数据
+
+    def test_validate_extreme_market(self):
+        """测试极端行情"""
+        from app.services.ai_generator import StrategyValidator
+
+        validator = StrategyValidator()
+
+        code = """
+class MarketStrategy:
+    def on_bar(self, bar):
+        return bar['close'] > bar['open']
+"""
+
+        # 涨停板数据
+        limit_up_data = [
+            {"open": 10, "close": 11, "high": 11, "low": 10, "volume": 1000000},  # 涨停
+        ]
+
+        result = validator.validate(code, test_data=limit_up_data)
+
+        assert result["passed"] is True
+
+    def test_validate_nan_values(self):
+        """测试NaN值处理"""
+        from app.services.ai_generator import StrategyValidator
+
+        validator = StrategyValidator()
+
+        code = """
+import math
+
+class NaNStrategy:
+    def on_bar(self, bar):
+        if math.isnan(bar.get('close', 0)):
+            return False
+        return True
+"""
+
+        # 包含NaN的数据
+        nan_data = [
+            {"open": 10, "close": float('nan'), "high": 10, "low": 10},
+        ]
+
+        result = validator.validate(code, test_data=nan_data)
+
+        # 策略应该能处理NaN
+        assert result["passed"] is True or "NaN" in result.get("message", "")

@@ -46,6 +46,11 @@ class ComplexityError(CN5Error):
     pass
 
 
+class ExecutionError(CN5Error):
+    """代码执行异常"""
+    pass
+
+
 # ==================
 # 回测相关异常
 # ==================

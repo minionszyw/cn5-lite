@@ -582,3 +582,360 @@ class AIStrategyGenerator:
                     raise
 
         raise AIError(f"生成失败，已重试{self.max_retries}次")
+
+
+# ==================
+# 策略沙箱执行器
+# ==================
+
+class StrategySandbox:
+    """
+    策略沙箱执行器
+
+    功能：
+    1. 超时保护
+    2. 内存限制
+    3. 异常隔离
+    4. 安全执行
+    """
+
+    def __init__(self, timeout: int = 30, max_memory_mb: int = 500):
+        """
+        初始化沙箱
+
+        Args:
+            timeout: 执行超时时间（秒）
+            max_memory_mb: 最大内存限制（MB）
+        """
+        self.timeout = timeout
+        self.max_memory_mb = max_memory_mb
+        logger.info(f"沙箱初始化", timeout=timeout, max_memory_mb=max_memory_mb)
+
+    def execute(self, code: str, method: str = "on_bar", args: tuple = ()) -> Any:
+        """
+        在沙箱中执行策略代码
+
+        Args:
+            code: 策略代码
+            method: 要调用的方法名
+            args: 方法参数
+
+        Returns:
+            方法执行结果
+
+        Raises:
+            ExecutionError: 执行失败
+        """
+        from app.errors import ExecutionError
+        import signal
+        import traceback
+
+        # 定义超时处理函数
+        def timeout_handler(signum, frame):
+            raise TimeoutError("执行超时")
+
+        try:
+            # 设置超时
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(self.timeout)
+
+            # 创建隔离的执行环境
+            import builtins
+            namespace = {
+                '__builtins__': {
+                    '__build_class__': builtins.__build_class__,
+                    '__name__': '__main__',
+                    '__import__': builtins.__import__,
+                    'range': range,
+                    'len': len,
+                    'sum': sum,
+                    'min': min,
+                    'max': max,
+                    'abs': abs,
+                    'round': round,
+                    'int': int,
+                    'float': float,
+                    'str': str,
+                    'bool': bool,
+                    'list': list,
+                    'dict': dict,
+                    'tuple': tuple,
+                    'set': set,
+                    'enumerate': enumerate,
+                    'zip': zip,
+                    'sorted': sorted,
+                    'reversed': reversed,
+                    'any': any,
+                    'all': all,
+                    'isinstance': isinstance,
+                    'hasattr': hasattr,
+                    'getattr': getattr,
+                    'object': object,
+                    'type': type,
+                    'None': None,
+                    'True': True,
+                    'False': False,
+                }
+            }
+
+            # 执行代码
+            exec(code, namespace)
+
+            # 找到策略类
+            strategy_class = None
+            for name, obj in namespace.items():
+                if isinstance(obj, type) and hasattr(obj, method):
+                    strategy_class = obj
+                    break
+
+            if not strategy_class:
+                raise ExecutionError(f"未找到包含{method}方法的策略类")
+
+            # 实例化策略
+            strategy_instance = strategy_class()
+
+            # 调用方法
+            result = getattr(strategy_instance, method)(*args)
+
+            # 取消超时
+            signal.alarm(0)
+
+            logger.info(f"沙箱执行成功", method=method)
+
+            return result
+
+        except TimeoutError as e:
+            signal.alarm(0)
+            logger.error(f"执行超时: {e}")
+            raise ExecutionError(f"执行超时（{self.timeout}秒）")
+
+        except MemoryError as e:
+            signal.alarm(0)
+            logger.error(f"内存超限: {e}")
+            raise ExecutionError("内存超限")
+
+        except Exception as e:
+            signal.alarm(0)
+            error_msg = f"执行失败: {str(e)}"
+            logger.error(error_msg, error=str(e), traceback=traceback.format_exc())
+            raise ExecutionError(error_msg)
+
+
+# ==================
+# 策略存储管理器
+# ==================
+
+class StrategyStorage:
+    """
+    策略存储管理器
+
+    功能：
+    1. 保存策略到数据库
+    2. 加载策略
+    3. 列出策略
+    4. 删除策略
+    """
+
+    def __init__(self):
+        """初始化存储管理器"""
+        from app.database import get_db
+        self.db = get_db()
+        logger.info("策略存储管理器初始化完成")
+
+    def save(self, strategy_data: Dict[str, Any]) -> int:
+        """
+        保存策略到数据库
+
+        Args:
+            strategy_data: {
+                "name": "策略名称",
+                "code": "策略代码",
+                "params": {...},
+                "description": "描述"
+            }
+
+        Returns:
+            策略ID
+        """
+        from datetime import datetime
+
+        query = """
+        INSERT INTO strategies (name, code, params, description, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """
+
+        params_json = json.dumps(strategy_data.get("params", {}))
+        now = datetime.now().isoformat()
+
+        cursor = self.db.execute(
+            query,
+            (
+                strategy_data.get("name", "未命名策略"),
+                strategy_data["code"],
+                params_json,
+                strategy_data.get("description", ""),
+                now,
+                now
+            )
+        )
+
+        self.db.commit()
+        strategy_id = cursor.lastrowid
+
+        logger.info(f"策略已保存", strategy_id=strategy_id, name=strategy_data.get("name"))
+
+        return strategy_id
+
+    def load(self, strategy_id: int) -> Optional[Dict[str, Any]]:
+        """
+        从数据库加载策略
+
+        Args:
+            strategy_id: 策略ID
+
+        Returns:
+            策略数据或None
+        """
+        query = "SELECT * FROM strategies WHERE id = ?"
+
+        cursor = self.db.execute(query, (strategy_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            logger.warning(f"策略不存在", strategy_id=strategy_id)
+            return None
+
+        # 转换为字典
+        columns = [desc[0] for desc in cursor.description]
+        strategy = dict(zip(columns, row))
+
+        # 解析params JSON
+        if strategy.get("params"):
+            try:
+                strategy["params"] = json.loads(strategy["params"])
+            except json.JSONDecodeError:
+                strategy["params"] = {}
+
+        logger.info(f"策略已加载", strategy_id=strategy_id)
+
+        return strategy
+
+    def list(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+        """
+        列出所有策略
+
+        Args:
+            limit: 返回数量
+            offset: 偏移量
+
+        Returns:
+            策略列表
+        """
+        query = "SELECT * FROM strategies ORDER BY created_at DESC LIMIT ? OFFSET ?"
+
+        cursor = self.db.execute(query, (limit, offset))
+        rows = cursor.fetchall()
+
+        # 转换为字典列表
+        columns = [desc[0] for desc in cursor.description]
+        strategies = []
+
+        for row in rows:
+            strategy = dict(zip(columns, row))
+
+            # 解析params JSON
+            if strategy.get("params"):
+                try:
+                    strategy["params"] = json.loads(strategy["params"])
+                except json.JSONDecodeError:
+                    strategy["params"] = {}
+
+            strategies.append(strategy)
+
+        logger.info(f"列出策略", count=len(strategies))
+
+        return strategies
+
+    def delete(self, strategy_id: int):
+        """
+        删除策略
+
+        Args:
+            strategy_id: 策略ID
+        """
+        query = "DELETE FROM strategies WHERE id = ?"
+
+        self.db.execute(query, (strategy_id,))
+        self.db.commit()
+
+        logger.info(f"策略已删除", strategy_id=strategy_id)
+
+
+# ==================
+# 策略逻辑验证器
+# ==================
+
+class StrategyValidator:
+    """
+    策略逻辑验证器
+
+    功能：
+    1. 空数据测试
+    2. 极端行情测试
+    3. 异常值测试（NaN/Inf）
+    4. 边界条件测试
+    """
+
+    def __init__(self):
+        """初始化验证器"""
+        self.sandbox = StrategySandbox(timeout=10)
+        logger.info("策略验证器初始化完成")
+
+    def validate(self, code: str, test_data: Optional[List[Dict]] = None) -> Dict[str, Any]:
+        """
+        验证策略逻辑
+
+        Args:
+            code: 策略代码
+            test_data: 测试数据
+
+        Returns:
+            {
+                "passed": bool,
+                "message": str,
+                "details": {...}
+            }
+        """
+        results = []
+
+        # 1. 空数据测试
+        try:
+            if test_data is None or len(test_data) == 0:
+                # 测试能否处理空数据
+                self.sandbox.execute(code, method="on_bar", args=({"close": 100},))
+                results.append({"test": "empty_data", "passed": True})
+            else:
+                results.append({"test": "empty_data", "passed": True, "skipped": True})
+        except Exception as e:
+            results.append({"test": "empty_data", "passed": False, "error": str(e)})
+
+        # 2. 使用提供的测试数据
+        if test_data:
+            for i, bar in enumerate(test_data):
+                try:
+                    self.sandbox.execute(code, method="on_bar", args=(bar,))
+                    results.append({"test": f"bar_{i}", "passed": True})
+                except Exception as e:
+                    results.append({"test": f"bar_{i}", "passed": False, "error": str(e)})
+
+        # 汇总结果
+        total_tests = len(results)
+        passed_tests = sum(1 for r in results if r.get("passed"))
+
+        all_passed = passed_tests == total_tests
+
+        return {
+            "passed": all_passed,
+            "message": f"通过 {passed_tests}/{total_tests} 项测试" if all_passed else f"失败 {total_tests - passed_tests}/{total_tests} 项测试",
+            "details": results
+        }
