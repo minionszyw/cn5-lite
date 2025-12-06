@@ -178,31 +178,43 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 4. 初始化数据库
+### 4. 启动服务
 
+**方式一：一键启动（推荐）**
 ```bash
-# 数据库会在首次运行时自动创建
-python -c "from app.database import init_db; init_db()"
+# 启动后端API服务（后台运行）
+source .venv/bin/activate
+uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload &
+
+# 启动前端Web界面
+streamlit run ui/app.py --server.port 8501 --server.address 0.0.0.0
 ```
 
-### 5. 运行测试（可选）
+**方式二：分别启动**
+```bash
+# 终端1：启动后端API
+source .venv/bin/activate
+uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload
+
+# 终端2：启动前端UI
+source .venv/bin/activate
+streamlit run ui/app.py --server.port 8501
+```
+
+### 5. 访问系统
+
+- **前端界面**: http://localhost:8501
+- **API文档**: http://localhost:8000/docs
+- **API服务**: http://localhost:8000
+
+### 6. 运行测试（可选）
 
 ```bash
-# 运行所有单元测试
+# 单元测试
 pytest tests/unit/ -v
 
 # 查看覆盖率
 pytest tests/unit/ --cov=app --cov-report=html
-```
-
-### 6. 启动API服务
-
-```bash
-# 开发模式
-uvicorn app.api.main:app --reload --host 0.0.0.0 --port 8000
-
-# 访问API文档
-open http://localhost:8000/docs
 ```
 
 ---

@@ -1,20 +1,20 @@
 # CN5-Lite AI量化交易系统 - Python依赖清单
-# 版本: 1.0
-# 更新: 2025-11-29
+# 版本: 1.0.1
+# 更新: 2025-12-06
 
 # ==================
 # Web框架
 # ==================
-fastapi==0.109.2
-uvicorn[standard]==0.27.0
-streamlit==1.30.0
-pydantic==2.5.3
-pydantic-settings==2.1.0
+fastapi==0.123.10
+uvicorn[standard]==0.38.0
+streamlit==1.52.1
+pydantic==2.12.5
+pydantic-settings==2.12.0
 
 # ==================
 # AI模型
 # ==================
-openai==1.12.0
+openai==2.9.0
 
 # ==================
 # 量化框架
@@ -26,11 +26,11 @@ vnpy-ctp==6.6.9  # CTP网关（期货/实盘）
 # ==================
 # 数据源
 # ==================
-akshare==1.13.5
+akshare==1.17.91
 baostock==0.8.9
 efinance==0.5.3
-pandas==2.1.4
-numpy==1.26.3
+pandas==2.3.3
+numpy==2.3.5
 
 # ==================
 # 任务队列
@@ -54,8 +54,8 @@ fakeredis==2.20.1  # 测试用
 # ==================
 # 测试
 # ==================
-pytest==7.4.4
-pytest-cov==4.1.0
+pytest==9.0.1
+pytest-cov==7.0.0
 pytest-asyncio==0.21.1
 pytest-mock==3.12.0
 pytest-xdist==3.5.0  # 并行测试
@@ -66,9 +66,9 @@ responses==0.24.1  # HTTP Mock
 # 工具库
 # ==================
 func-timeout==4.3.5  # 超时控制
-python-dotenv==1.0.0
+python-dotenv==1.2.1
 python-multipart==0.0.6  # FastAPI文件上传
-httpx==0.26.0  # 异步HTTP客户端
+httpx==0.28.1  # 异步HTTP客户端
 websockets==12.0  # WebSocket支持
 
 # ==================
@@ -91,5 +91,5 @@ pre-commit==3.6.0  # Git钩子
 # ==================
 # 日志和监控
 # ==================
-loguru==0.7.2  # 高级日志
+loguru==0.7.3  # 高级日志
 sentry-sdk[fastapi]==1.39.2  # 错误追踪（可选）

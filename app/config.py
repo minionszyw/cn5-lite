@@ -119,6 +119,12 @@ class Config:
         # ==================
         self.TRADING_MODE = os.getenv("TRADING_MODE", "simulation")
 
+        # ==================
+        # 环境配置
+        # ==================
+        self.ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+        self.DEBUG = os.getenv("DEBUG", "true").lower() == "true"
+
     def _parse_ratio(self, key: str, default: float) -> float:
         """
         解析比例配置（0-1之间）
